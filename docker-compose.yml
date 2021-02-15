@@ -17,7 +17,7 @@ services:
       - TZ=Europe/Berlin
 
   database:
-    image: mariadb:10.4.7
+    image: hypriot/rpi-mysql:5.5
     restart: always
     env_file:
       - .env
