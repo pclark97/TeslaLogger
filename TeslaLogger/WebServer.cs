@@ -200,6 +200,9 @@ namespace TeslaLogger
                     case bool _ when request.Url.LocalPath.Equals("/export/trip"):
                         ExportTrip(request, response);
                         break;
+                    case bool _ when request.Url.LocalPath.Equals("/passwortinfo"):
+                        passwortinfo(request, response);
+                        break;
                     // get car values
                     case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/get/[0-9]+/.+"):
                         Get_CarValue(request, response);
@@ -214,6 +217,9 @@ namespace TeslaLogger
                     // Tesla API debug
                     case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/debug/TeslaAPI/[0-9]+/.+"):
                         Debug_TeslaAPI(request, response);
+                        break;
+                    case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/mfa/[0-9]+/.+"):
+                        Set_MFA(request, response);
                         break;
                     case bool _ when request.Url.LocalPath.Equals("/debug/TeslaLogger/states"):
                         Debug_TeslaLoggerStates(request, response);
@@ -252,6 +258,26 @@ namespace TeslaLogger
             {
                 Logfile.Log($"Localpath: {localpath}\r\n" + ex.ToString());
             }
+        }
+
+        private void Set_MFA(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            Match m = Regex.Match(request.Url.LocalPath, @"/mfa/([0-9]+)/(.+)");
+            if (m.Success && m.Groups.Count == 3 && m.Groups[1].Captures.Count == 1 && m.Groups[2].Captures.Count == 1)
+            {
+                int.TryParse(m.Groups[1].Captures[0].ToString(), out int CarID);
+                string mfa = m.Groups[2].Captures[0].ToString();
+                if (mfa.Length > 0 && CarID > 0)
+                {
+                    Car car = Car.GetCarByID(CarID);
+                    if (car != null)
+                    {
+                        car.passwortinfo.Append("Send MFA to Tesla server<br>");
+                        car.MFA_Code = mfa;
+                    }
+                }
+            }
+            WriteString(response, "");
         }
 
         private void Admin_DownloadLogs(HttpListenerRequest request, HttpListenerResponse response)
@@ -510,6 +536,31 @@ namespace TeslaLogger
             response.AddHeader("Content-Type", "text/html; charset=utf-8");
             WriteString(response, "<html><head></head><body><table border=\"1\">" + string.Concat(Tools.debugBuffer.Select(a => string.Format("<tr><td>{0}&nbsp;{1}</td></tr>", a.Key, a.Value))) + "</table></body></html>");
         }
+        
+        private void passwortinfo(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            System.Diagnostics.Debug.WriteLine("passwortinfo");
+            string data = GetDataFromRequestInputStream(request);
+
+            dynamic r = new JavaScriptSerializer().DeserializeObject(data);
+
+            int id = Convert.ToInt32(r["id"]);
+
+            var c = Car.GetCarByID(id);
+
+            WriteString(response, c.passwortinfo.ToString());
+        }
+
+        private static string GetDataFromRequestInputStream(HttpListenerRequest request)
+        {
+            string data;
+            using (StreamReader reader = new StreamReader(request.InputStream, request.ContentEncoding))
+            {
+                data = reader.ReadToEnd();
+            }
+
+            return data;
+        }
 
         private void GetCurrentJson(HttpListenerRequest request, HttpListenerResponse response)
         {
@@ -651,11 +702,7 @@ namespace TeslaLogger
             {
                 Logfile.Log("SetPassword");
 
-                string data;
-                using (StreamReader reader = new StreamReader(request.InputStream, request.ContentEncoding))
-                {
-                    data = reader.ReadToEnd();
-                }
+                string data = GetDataFromRequestInputStream(request);
 
                 dynamic r = new JavaScriptSerializer().DeserializeObject(data);
 
@@ -694,7 +741,7 @@ namespace TeslaLogger
                         con.Open();
 
 
-                        using (var cmd2 = new MySqlCommand("update cars set tesla_token='' where id = @id", con))
+                        using (var cmd2 = new MySqlCommand("update cars set tesla_token='', refresh_token='' where id = @id", con))
                         {
                             cmd2.Parameters.AddWithValue("@id", id);
                             cmd2.ExecuteNonQuery();
@@ -703,6 +750,7 @@ namespace TeslaLogger
                             if (c != null)
                             {
                                 c.ExitTeslaLogger("Reconnect!");
+                                c.passwortinfo = new StringBuilder();
 
                                 c.ThreadJoin();
 
@@ -746,7 +794,7 @@ namespace TeslaLogger
 
                                     Car nc = new Car(Convert.ToInt32(newid), email, password, teslacarid, "", DateTime.MinValue, "", "", "", "", "", "", null);
 
-                                    WriteString(response, "OK");
+                                    WriteString(response, "ID:"+newid);
                                 }
                             }
                         }
@@ -760,7 +808,7 @@ namespace TeslaLogger
                         {
                             con.Open();
 
-                            using (MySqlCommand cmd = new MySqlCommand("update cars set tesla_name=@tesla_name, tesla_password=@tesla_password, tesla_carid=@tesla_carid, freesuc=@freesuc where id=@id", con))
+                            using (MySqlCommand cmd = new MySqlCommand("update cars set tesla_name=@tesla_name, tesla_password=@tesla_password, tesla_carid=@tesla_carid, freesuc=@freesuc,  tesla_token='', refresh_token='' where id=@id", con))
                             {
                                 cmd.Parameters.AddWithValue("@id", dbID);
                                 cmd.Parameters.AddWithValue("@tesla_name", email);
@@ -964,10 +1012,7 @@ namespace TeslaLogger
                 }
                 else
                 {
-                    using (StreamReader reader = new StreamReader(request.InputStream, request.ContentEncoding))
-                    {
-                        json = reader.ReadToEnd();
-                    }
+                    json = GetDataFromRequestInputStream(request);
                 }
 
                 Logfile.Log("JSON: " + json);
