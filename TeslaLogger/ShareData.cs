@@ -28,7 +28,7 @@ namespace TeslaLogger
             }
 
             TeslaloggerVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
-            UpdateDataTable("chargingstate");
+            // UpdateDataTable("chargingstate");
 
             if (!Tools.IsShareData())
             {
