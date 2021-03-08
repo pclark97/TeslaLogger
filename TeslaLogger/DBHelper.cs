@@ -283,12 +283,14 @@ namespace TeslaLogger
             }
         }
 
-        internal string GetRefreshToken()
+        internal string GetRefreshToken(out string tesla_token)
         {
+            tesla_token = "";
+
             using (MySqlConnection con = new MySqlConnection(DBConnectionstring))
             {
                 con.Open();
-                using (MySqlCommand cmd = new MySqlCommand("SELECT refresh_token FROM cars where id = @CarID", con))
+                using (MySqlCommand cmd = new MySqlCommand("SELECT refresh_token, tesla_token FROM cars where id = @CarID", con))
                 {
                     cmd.Parameters.AddWithValue("@CarID", car.CarInDB);
 
@@ -296,6 +298,7 @@ namespace TeslaLogger
                     if (dr.Read())
                     {
                         string refresh_token = dr[0].ToString();
+                        tesla_token = dr[1].ToString();
                         return refresh_token;
                     }
                 }
@@ -484,6 +487,7 @@ namespace TeslaLogger
         public void CloseChargingState()
         {
             car.Log("CloseChargingState()");
+            MapQuest.CreateChargingMapOnChargingCompleted(car.CarInDB);
             bool hasFreeSuc = car.HasFreeSuC();
             if (hasFreeSuc)
             {
@@ -494,14 +498,14 @@ namespace TeslaLogger
                     {
                         con.Open();
                         using (MySqlCommand cmd = new MySqlCommand(
-@"UPDATE 
-  chargingstate 
-SET 
-  cost_total= @cost_total
-WHERE 
-  CarID = @carid 
-  AND EndDate is null 
-  AND fast_charger_brand = 'Tesla'", con))
+                            @"UPDATE 
+                              chargingstate 
+                            SET 
+                              cost_total= @cost_total
+                            WHERE 
+                              CarID = @carid 
+                              AND EndDate is null 
+                              AND fast_charger_brand = 'Tesla'", con))
                         {
                             cmd.Parameters.AddWithValue("@carid", car.CarInDB);
                             cmd.Parameters.AddWithValue("@cost_total", 0.0);
@@ -937,7 +941,14 @@ WHERE
 
             Task.Factory.StartNew(() =>
               {
-                  UpdateTripElevation(StartPos, MaxPosId, " (Task)");
+                  if (StartPos > 0)
+                  {
+                      UpdateTripElevation(StartPos, MaxPosId, " (Task)");
+
+                      MapQuest.CreateTripMap(StartPos, MaxPosId, car.CarInDB);
+                      MapQuest.CreateParkingMapFromPosid(StartPos);
+                      MapQuest.CreateParkingMapFromPosid(MaxPosId);
+                  }
               });
         }
 
@@ -2009,6 +2020,32 @@ WHERE
             }
         }
 
+        public static object ExecuteSQLScalar(string sql, int timeout = 30)
+        {
+            try
+            {
+                using (MySqlConnection con = new MySqlConnection(DBConnectionstring))
+                {
+                    con.Open();
+                    using (MySqlCommand cmd = new MySqlCommand(sql, con))
+                    {
+                        if (timeout != 30)
+                        {
+                            cmd.CommandTimeout = timeout;
+                        }
+
+                        return cmd.ExecuteScalar();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logfile.Log("Error in: " + sql);
+                Logfile.ExceptionWriter(ex, sql);
+                throw;
+            }
+        }
+
         public void CheckForInterruptedCharging(bool logging)
         {
             try
@@ -2372,6 +2409,65 @@ WHERE
             {
                 car.Log(ex.ToString());
             }
+        }
+
+        DataTable GetLatestDC_Charging_with_50PercentSOC()
+        {
+            DataTable dt = new DataTable();
+            string sql = @"select c1.Datum as sd, c2.Datum as ed, chargingstate.carid from chargingstate 
+                join charging c1 on c1.id = startchargingid 
+                join charging c2 on c2.id = endchargingid
+                where max_charger_power > 30 and c1.battery_level < 50 and c2.battery_level > 50 and chargingstate.carid = @carid
+                order by chargingstate.startdate desc
+                limit 5";
+
+            using (MySqlDataAdapter da = new MySqlDataAdapter(sql, DBConnectionstring))
+            {
+                da.SelectCommand.Parameters.AddWithValue("@carid", car.CarInDB);
+                da.Fill(dt);
+            }
+
+            return dt;
+        }
+
+        public double GetVoltageAt50PercentSOC(out DateTime start, out DateTime ende)
+        {
+            start = DateTime.MinValue;
+            ende = DateTime.MinValue;
+
+            try
+            {
+                DataTable dt = GetLatestDC_Charging_with_50PercentSOC();
+                string sql = "select avg(charger_voltage) from charging where carid = @carid and Datum between @start and @ende and charger_voltage > 300";
+
+                foreach(DataRow dr in dt.Rows)
+                {
+                    using (MySqlConnection con = new MySqlConnection(DBConnectionstring))
+                    {
+                        con.Open();
+                        using (MySqlCommand cmd = new MySqlCommand(sql, con))
+                        {
+                            start = (DateTime)dr["sd"];
+                            ende = (DateTime)dr["ed"];
+
+                            cmd.Parameters.AddWithValue("@carid", car.CarInDB);
+                            cmd.Parameters.AddWithValue("@start", start);
+                            cmd.Parameters.AddWithValue("@ende", ende);
+                            object ret = cmd.ExecuteScalar();
+
+                            if (ret == DBNull.Value)
+                                continue;
+                            
+                            return Convert.ToDouble(ret);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logfile.Log(ex.ToString());
+            }
+            return 0;
         }
 
         public static object DBNullIfEmptyOrZero(string val)

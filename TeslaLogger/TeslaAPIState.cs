@@ -439,6 +439,7 @@ namespace TeslaLogger
                         case "backseat_token":
                         case "backseat_token_updated_at":
                         case "vehicle_config":
+                        case "command_signing":
                             if (r4.TryGetValue(key, out value))
                             {
                                 AddValue(key, "string", value, 0, "vehicles");
@@ -1080,6 +1081,7 @@ namespace TeslaLogger
                             case "steering_wheel_heater":
                             case "wiper_blade_heater":
                             case "smart_preconditioning":
+                            case "bioweapon_mode":
                                 if (r2.TryGetValue(key, out object value))
                                 {
                                     AddValue(key, "bool", value, timestamp, "climate_state");

@@ -207,12 +207,19 @@ namespace TeslaLogger
                     case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/get/[0-9]+/.+"):
                         Get_CarValue(request, response);
                         break;
+                    // static map service
+                    case bool _ when request.Url.LocalPath.Equals("/get/map"):
+                        GetStaticMap(request, response);
+                        break;
                     // send car commands
                     case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/command/[0-9]+/.+"):
                         SendCarCommand(request, response);
                         break;
                     case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/currentjson/[0-9]+"):
                         GetCurrentJson(request, response);
+                        break;
+                    case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/decodecar/[0-9]+"):
+                        DecodeCar(request, response);
                         break;
                     // Tesla API debug
                     case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/debug/TeslaAPI/[0-9]+/.+"):
@@ -258,6 +265,121 @@ namespace TeslaLogger
             {
                 Logfile.Log($"Localpath: {localpath}\r\n" + ex.ToString());
             }
+        }
+
+        private void GetStaticMap(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            int startPosID = 0;
+            int endPosID = 0;
+            int width = 240;
+            int height = 0;
+            StaticMapService.StaticMapType type = StaticMapService.StaticMapType.Trip;
+            StaticMapService.StaticMapMode mode = StaticMapService.StaticMapMode.Regular;
+            if (request.QueryString.HasKeys())
+            {
+                foreach (string key in request.QueryString.AllKeys)
+                {
+                    switch (key)
+                    {
+                        case "start":
+                            _ = int.TryParse(request.QueryString.GetValues(key)[0], out startPosID);
+                            break;
+                        case "end":
+                            _ = int.TryParse(request.QueryString.GetValues(key)[0], out endPosID);
+                            break;
+                        case "width":
+                            _ = int.TryParse(request.QueryString.GetValues(key)[0], out width);
+                            break;
+                        case "height":
+                            _ = int.TryParse(request.QueryString.GetValues(key)[0], out height);
+                            break;
+                        case "mode":
+                            if ("dark".Equals(request.QueryString.GetValues(key)[0]))
+                            {
+                                mode = StaticMapService.StaticMapMode.Dark;
+                            }
+                            break;
+                        case "type":
+                            if ("park".Equals(request.QueryString.GetValues(key)[0]))
+                            {
+                                type = StaticMapService.StaticMapType.Park;
+                            }
+                            else if ("charge".Equals(request.QueryString.GetValues(key)[0]))
+                            {
+                                type = StaticMapService.StaticMapType.Charge;
+                            }
+                            break;
+                    }
+                }
+            }
+            if (startPosID != 0 && endPosID != 0)
+            {
+                try
+                {
+                    string path = FileManager.GetMapCachePath() + Path.DirectorySeparatorChar + $"map_{startPosID}_{endPosID}.png";
+                    // check file age
+                    if (File.Exists(path))
+                    {
+                        if ((DateTime.UtcNow - File.GetCreationTimeUtc(path)).TotalDays > 90)
+                        {
+                            File.Delete(path);
+                        }
+                    }
+                    if (File.Exists(path))
+                    {
+                        using (FileStream fs = File.OpenRead(path))
+                        {
+                            WritePNGStream(response, fs);
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        // order static map generation
+                        StaticMapService.GetSingleton().Enqueue(startPosID, endPosID, width, height, type, mode);
+                        // wait
+                        for (int i = 0; i < 30; i++)
+                        {
+                            Thread.Sleep(1000);
+                            if (File.Exists(path))
+                            {
+                                using (FileStream fs = File.OpenRead(path))
+                                {
+                                    WritePNGStream(response, fs);
+                                    return;
+                                }
+                            }
+                        }
+                        WriteString(response, "Error generating map took too long");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logfile.Log(ex.ToString());
+                }
+            }
+            else
+            {
+                try
+                {
+                    WriteString(response, "Error in map request");
+                }
+                catch (Exception ex)
+                {
+                    // ignore
+                }
+            }
+        }
+
+        private static void WritePNGStream(HttpListenerResponse response, Stream fs)
+        {
+            response.ContentLength64 = fs.Length;
+            response.SendChunked = false;
+            response.ContentType = "image/png";
+            response.StatusCode = (int)HttpStatusCode.OK;
+            response.StatusDescription = "OK";
+            fs.CopyTo(response.OutputStream);
+            response.OutputStream.Close();
         }
 
         private void Set_MFA(HttpListenerRequest request, HttpListenerResponse response)
@@ -541,10 +663,17 @@ namespace TeslaLogger
         {
             System.Diagnostics.Debug.WriteLine("passwortinfo");
             string data = GetDataFromRequestInputStream(request);
+            int id = 0;
 
-            dynamic r = new JavaScriptSerializer().DeserializeObject(data);
-
-            int id = Convert.ToInt32(r["id"]);
+            if (String.IsNullOrEmpty(data))
+            {
+                id = Convert.ToInt32(request.QueryString["id"]);
+            }
+            else
+            {
+                dynamic r = new JavaScriptSerializer().DeserializeObject(data);
+                id = Convert.ToInt32(r["id"]);
+            }
 
             var c = Car.GetCarByID(id);
 
@@ -581,6 +710,74 @@ namespace TeslaLogger
                         response.StatusCode = (int)HttpStatusCode.NotFound;
                         WriteString(response, @"URL Not Found!");
                     }
+                }
+                catch (Exception ex)
+                {
+                    WriteString(response, ex.ToString());
+                    Logfile.ExceptionWriter(ex, request.Url.LocalPath);
+                }
+            }
+        }
+
+        private void DecodeCar(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            System.Diagnostics.Debug.WriteLine(request.Url.LocalPath);
+
+            Match m = Regex.Match(request.Url.LocalPath, @"/decodecar/([0-9]+)");
+            if (m.Success && m.Groups.Count == 2 && m.Groups[1].Captures.Count == 1)
+            {
+                int.TryParse(m.Groups[1].Captures[0].ToString(), out int CarID);
+                try
+                {
+                    StringBuilder sb = new StringBuilder();
+                    Car c = Car.GetCarByID(CarID);
+
+                    c.webhelper.lastUpdateEfficiency = DateTime.Now.AddDays(-1);
+                    string s = c.webhelper.Wakeup().Result;
+                    string io = c.webhelper.IsOnline().Result;
+
+                    c.webhelper.UpdateEfficiency();
+
+                    sb.Append("ModelName:").Append(c.ModelName).Append("\r\n");
+                    sb.Append("Wh_TR:").Append(c.Wh_TR).Append("\r\n").Append("\r\n");
+
+                    int maxRange = c.dbHelper.GetAvgMaxRage();
+                    sb.Append("AvgMaxRage:").Append(maxRange).Append("\r\n").Append("\r\n");
+
+                    sb.Append("display_name:").Append(c.display_name).Append("\r\n");
+                    sb.Append("vin:").Append(c.vin.Substring(0,11)).Append("XXXXXX").Append("\r\n");
+                    sb.Append("car_type:").Append(c.car_type).Append("\r\n");
+                    sb.Append("car_special_type:").Append(c.car_special_type).Append("\r\n");
+                    sb.Append("trim_badging:").Append(c.trim_badging).Append("\r\n");
+                    
+                    c.GetTeslaAPIState().GetBool("has_ludicrous_mode", out bool has_ludicrous_mode);
+                    sb.Append("has_ludicrous_mode:").Append(has_ludicrous_mode).Append("\r\n");
+                    sb.Append("DB_Wh_TR:").Append(c.DB_Wh_TR).Append("\r\n").Append("\r\n");
+
+                    Tools.VINDecoder(c.vin, out int year, out string carType, out bool AWD, out bool MIC, out string batery, out string motor);
+                    sb.Append("VIN Year:").Append(year).Append("\r\n");
+                    sb.Append("VIN carType:").Append(carType).Append("\r\n");
+                    sb.Append("VIN AWD:").Append(AWD).Append("\r\n");
+                    sb.Append("VIN MIC:").Append(MIC).Append("\r\n");
+                    sb.Append("VIN batery:").Append(batery).Append("\r\n");
+                    sb.Append("VIN motor:").Append(motor).Append("\r\n");
+
+                    sb.Append("Voltage at 50% SOC:").Append(c.dbHelper.GetVoltageAt50PercentSOC(out DateTime startdate, out DateTime ende)).Append("V Date:").Append(startdate).Append("\r\n");
+
+                    string vehicle_config = "";
+
+                    for (int retry = 0; retry < 10; retry++)
+                    {
+                        vehicle_config = c.webhelper.GetCommand("vehicle_config").Result;
+                        if (vehicle_config?.Trim()?.StartsWith("{") == true)
+                            break;
+
+                        System.Threading.Thread.Sleep(2000);
+                    }
+
+                    sb.Append("Vehicle Config:").Append("\r\n").Append(vehicle_config).Append("\r\n");
+
+                    WriteString(response, sb.ToString());
                 }
                 catch (Exception ex)
                 {
