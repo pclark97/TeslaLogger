@@ -358,15 +358,15 @@ namespace TeslaLogger
 
                 if (DBHelper.IndexExists("idx_pos_datum", "pos"))
                 {
-                    Logfile.Log("alter table pos drop index idx_pos_datum");
-                    DBHelper.ExecuteSQLQuery("alter table pos drop index idx_pos_datum", 600);
+                    Logfile.Log("alter table pos drop index if exists idx_pos_datum");
+                    DBHelper.ExecuteSQLQuery("alter table pos drop index if exists idx_pos_datum", 600);
                     Logfile.Log("ALTER TABLE OK");
                 }
 
                 if (DBHelper.IndexExists("can_ix", "can"))
                 {
-                    Logfile.Log("alter table can drop index can_ix");
-                    DBHelper.ExecuteSQLQuery("alter table can drop index can_ix", 600);
+                    Logfile.Log("alter table can drop index if exists can_ix");
+                    DBHelper.ExecuteSQLQuery("alter table can drop index if exists can_ix", 600);
                     Logfile.Log("ALTER TABLE OK");
                 }
 
@@ -719,8 +719,8 @@ CREATE TABLE superchargerstate(
                 if (File.Exists(phpinipath))
                 {
                     string phpini = File.ReadAllText("/etc/php/7.0/apache2/php.ini");
-                    string newphpini = Regex.Replace(phpini, "(post_max_size\\s*=)(.*)", "$1 50M");
-                    newphpini = Regex.Replace(newphpini, "(upload_max_filesize\\s*=)(.*)", "$1 50M");
+                    string newphpini = Regex.Replace(phpini, "(post_max_size\\s*=)(.*)", "$1 150M");
+                    newphpini = Regex.Replace(newphpini, "(upload_max_filesize\\s*=)(.*)", "$1 150M");
 
                     File.WriteAllText(phpinipath, newphpini);
 
