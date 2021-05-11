@@ -23,7 +23,7 @@ namespace TeslaLogger
 
         private static bool _done = false;
 
-        public static bool Done { get => _done;}
+        public static bool Done { get => _done; }
 
         private static Thread ComfortingMessages = null;
         public static bool DownloadUpdateAndInstallStarted = false;
@@ -66,6 +66,8 @@ namespace TeslaLogger
                             break;
                         case 3:
                             Logfile.Log("TeslaLogger update is still running, thank you for your patience");
+                            break;
+                        default:
                             break;
                     }
                 }
@@ -370,7 +372,6 @@ namespace TeslaLogger
                     Logfile.Log("ALTER TABLE OK");
                 }
 
-
                 if (!DBHelper.IndexExists("IX_charging_carid_datum", "charging"))
                 {
                     Logfile.Log("alter table charging add index IX_charging_carid_datum (CarId, Datum)");
@@ -413,6 +414,48 @@ CREATE TABLE superchargerstate(
                 {
                     Logfile.Log("ALTER TABLE cars ADD Column refresh_token");
                     DBHelper.ExecuteSQLQuery(@"ALTER TABLE `cars` ADD COLUMN `refresh_token` TEXT NULL DEFAULT NULL", 600);
+                }
+
+                if (!DBHelper.ColumnExists("cars", "ABRP_token"))
+                {
+                    Logfile.Log("ALTER TABLE cars ADD Column ABRP_token");
+                    DBHelper.ExecuteSQLQuery(@"ALTER TABLE `cars` ADD COLUMN `ABRP_token` VARCHAR(40) NULL DEFAULT NULL", 600);
+                }
+
+                if (!DBHelper.ColumnExists("cars", "ABRP_mode"))
+                {
+                    Logfile.Log("ALTER TABLE cars ADD Column ABRP_mode");
+                    DBHelper.ExecuteSQLQuery(@"ALTER TABLE `cars` ADD COLUMN `ABRP_mode` TINYINT(1) NULL DEFAULT 0", 600);
+                }
+
+                // check datetime precision in pos
+                try
+                {
+                    using (MySqlConnection con = new MySqlConnection(DBHelper.DBConnectionstring))
+                    {
+                        con.Open();
+                        using (MySqlCommand cmd = new MySqlCommand("SELECT datetime_precision FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'pos' AND COLUMN_NAME = 'datum' and TABLE_SCHEMA = 'teslalogger'", con))
+                        {
+                            Tools.DebugLog(cmd);
+                            MySqlDataReader dr = cmd.ExecuteReader();
+                            if (dr.Read() && dr[0] != DBNull.Value)
+                            {
+                                if (int.TryParse(dr[0].ToString(), out int datetime_precision))
+                                {
+                                    if (datetime_precision != 3)
+                                    {
+                                        // update table
+                                        Logfile.Log("ALTER TABLE `pos` CHANGE `Datum` `Datum` DATETIME(3) NOT NULL;");
+                                        DBHelper.ExecuteSQLQuery(@"ALTER TABLE `pos` CHANGE `Datum` `Datum` DATETIME(3) NOT NULL;", 3000);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logfile.Log(ex.ToString());
                 }
 
                 // end of schema update
@@ -487,6 +530,18 @@ CREATE TABLE superchargerstate(
                 {
                     Tools.Exec_mono("apt-get", "-y install git");
                     Tools.Exec_mono("git", "--version");
+                }
+
+                if (!Tools.Exec_mono("optipng", "-version", false).Contains("OptiPNG version"))
+                {
+                    if (Tools.Exec_mono("apt-get", "-y install optipng", false).Contains("apt --fix-broken"))
+                    {
+                        Logfile.Log("Info: apt-get cannot install optipng");
+                    }
+                    else
+                    {
+                        Tools.Exec_mono("optipng", "-version");
+                    }
                 }
 
                 Tools.Exec_mono("rm", "-rf /etc/teslalogger/git/*");
@@ -728,7 +783,7 @@ CREATE TABLE superchargerstate(
                     {
                         Logfile.Log("PHP.ini changed!");
                     }
-                }   
+                }
             }
             catch (Exception ex)
             {
@@ -812,12 +867,12 @@ CREATE TABLE superchargerstate(
             }
         }
 
+
+
         internal static Dictionary<string, string> GetLanguageDictionary(string language)
         {
             Dictionary<string, string> ht = new Dictionary<string, string>();
-
-            string filename = Path.Combine(FileManager.GetExecutingPath(), "language-" + language + ".txt");
-            filename = filename.Replace("\\bin\\Debug", "\\bin");
+            string filename = GetLanguageFilepath(language);
             string content = null;
 
             if (File.Exists(filename))
@@ -862,7 +917,7 @@ CREATE TABLE superchargerstate(
                         }
                         else
                         {
-                            ht.Add(key, key +" xxx");
+                            ht.Add(key, key + " xxx");
                         }
                     }
                 }
@@ -876,6 +931,12 @@ CREATE TABLE superchargerstate(
             return ht;
         }
 
+        private static string GetLanguageFilepath(string language)
+        {
+            string filename = Path.Combine(FileManager.GetExecutingPath(), "language-" + language + ".txt");
+            filename = filename.Replace("\\bin\\Debug", "\\bin");
+            return filename;
+        }
 
         public static void UpdateGrafana()
         {
@@ -904,7 +965,8 @@ CREATE TABLE superchargerstate(
                             // use internal downloader
                             const string grafanaUrl = "https://dl.grafana.com/oss/release/grafana_7.2.0_armhf.deb";
                             const string grafanaFile = "grafana_7.2.0_armhf.deb";
-                            if (!Tools.DownloadToFile(grafanaUrl, grafanaFile, 300, true).Result) {
+                            if (!Tools.DownloadToFile(grafanaUrl, grafanaFile, 300, true).Result)
+                            {
                                 // fallback to wget
                                 Logfile.Log($"fallback o wget to download {grafanaUrl}");
                                 Tools.Exec_mono("wget", $"{grafanaUrl}  --show-progress");
@@ -1232,7 +1294,7 @@ CREATE TABLE superchargerstate(
                         {
                             s = s.Replace("grafana-trackmap-panel", "pr0ps-trackmap-panel");
                         }
-                        
+
                         string title, uid, link;
                         GrafanaGetTitleAndLink(s, URL_Grafana, out title, out uid, out link);
 
@@ -1240,9 +1302,9 @@ CREATE TABLE superchargerstate(
                         dictLanguage.TryGetValue("Car", out carLabel);
 
                         s = UpdateDefaultCar(s, defaultcar, defaultcarid, carLabel);
-                        
+
                         if (!title.Contains("ScanMyTesla") && !title.Contains("Zelltemperaturen") && !title.Contains("SOC ") && !title.Contains("Chargertype") && !title.Contains("Mothership"))
-                            dashboardlinks.Add(title+"|"+link);
+                            dashboardlinks.Add(title + "|" + link);
 
                         File.WriteAllText(f, s);
                     }
@@ -1255,7 +1317,8 @@ CREATE TABLE superchargerstate(
                         dashboardlinks.ForEach((s) => sb.Append(s).Append("\r\n"));
 
                         System.IO.File.WriteAllText("/etc/teslalogger/dashboardlinks.txt", sb.ToString(), Encoding.UTF8);
-                    } catch (Exception ex)
+                    }
+                    catch (Exception ex)
                     {
                         Logfile.Log(ex.ToString());
                     }
@@ -1266,6 +1329,10 @@ CREATE TABLE superchargerstate(
                     {
                         Tools.Exec_mono("service", "grafana-server restart");
                     }
+
+                    CopyLanguageFileToTimelinePanel(language);
+
+                    CopySettingsToTimelinePanel();
                 }
             }
             catch (Exception ex)
@@ -1278,6 +1345,42 @@ CREATE TABLE superchargerstate(
             }
         }
 
+        private static void CopyLanguageFileToTimelinePanel(string language)
+        {
+            try
+            {
+                string languageFilepath = GetLanguageFilepath(language);
+                if (File.Exists(languageFilepath))
+                {
+                    string dst = "/var/lib/grafana/plugins/teslalogger-timeline-panel/dist/language.txt";
+                    Logfile.Log("Copy " + languageFilepath + " to " + dst);
+                    File.Copy(languageFilepath, dst, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logfile.Log(ex.ToString());
+            }
+        }
+
+        private static void CopySettingsToTimelinePanel()
+        {
+            try
+            {
+                string settingsFilepath = "/etc/teslalogger/settings.json";
+                if (File.Exists(settingsFilepath))
+                {
+                    string dst = "/var/lib/grafana/plugins/teslalogger-timeline-panel/dist/settings.json";
+                    Logfile.Log("Copy " + settingsFilepath + " to " + dst);
+                    File.Copy(settingsFilepath, dst, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logfile.Log(ex.ToString());
+            }
+        }
+
         internal static string UpdateDefaultCar(string s, string name, string id, string carLabel)
         {
             try
@@ -1287,7 +1390,7 @@ CREATE TABLE superchargerstate(
 
                 Regex regexAlias = new Regex("(templating.*\\\"text\\\":\\s\\\")(\\\".*?value\\\":\\s\\\")(.*?)(\\\")(.*?display_name)(.*?label\\\":\\s\\\")(.*?)(\\\")", RegexOptions.Singleline | RegexOptions.Multiline);
                 var m = regexAlias.Match(s);
-                string ret = regexAlias.Replace(s, "${1}" + name + "${2}" + id + "${4}${5}${6}"+carLabel+"${8}");
+                string ret = regexAlias.Replace(s, "${1}" + name + "${2}" + id + "${4}${5}${6}" + carLabel + "${8}");
                 return ret;
             }
             catch (Exception ex)
@@ -1348,8 +1451,8 @@ CREATE TABLE superchargerstate(
                 return content;
             }
 
-            Regex regexAlias = new Regex("\\\"alias\\\":.*?\\\""+ v +"\\\"");
-            string replace = "\"alias\": \""+dictLanguage[v]+"\"";
+            Regex regexAlias = new Regex("\\\"alias\\\":.*?\\\"" + v + "\\\"");
+            string replace = "\"alias\": \"" + dictLanguage[v] + "\"";
 
             return regexAlias.Replace(content, replace);
         }
@@ -1412,7 +1515,7 @@ CREATE TABLE superchargerstate(
         }
 
 
-        public static void Chmod(string filename, int chmod, bool logging=true)
+        public static void Chmod(string filename, int chmod, bool logging = true)
         {
             try
             {

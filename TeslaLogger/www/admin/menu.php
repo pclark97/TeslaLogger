@@ -30,17 +30,20 @@ function menu($title)
     $alldashboards = file_get_contents("/etc/teslalogger/dashboardlinks.txt");
 
     $allcars = file_get_contents(GetTeslaloggerURL("getallcars"),0, stream_context_create(["http"=>["timeout"=>2]]));
+    
     $jcars = json_decode($allcars);
+    if ($jcars !== null)
+    {
+        foreach ($jcars as $k => $v) {
+            if ($v->{"id"} == $current_carid)
+            {
+                $display_name = $v->{"display_name"};
+                $tasker_token = $v->{"tasker_hash"};    
+                $car = $v->{"model_name"};  
 
-    foreach ($jcars as $k => $v) {
-        if ($v->{"id"} == $current_carid)
-        {
-            $display_name = $v->{"display_name"};
-            $tasker_token = $v->{"tasker_hash"};    
-            $car = $v->{"model_name"};  
-
-            if (strlen($display_name) == 0)
-                $display_name = "Car ".$v->{"id"};
+                if (strlen($display_name) == 0)
+                    $display_name = "Car ".$v->{"id"};
+            }
         }
     }
 
@@ -57,15 +60,18 @@ function menu($title)
                         <a href="index.php"><?PHP echo($display_name);?></a>
                         <ul class='children'>
 <?PHP                  
-                        foreach($jcars as $k => $v) {
-                            $dn = $v->{"display_name"};
-                            $carid = $v->{"id"};
+                        if ($jcars !== null)
+                        {
+                            foreach($jcars as $k => $v) {
+                                $dn = $v->{"display_name"};
+                                $carid = $v->{"id"};
 
-                            if (strlen($dn) == 0)
-                                $dn = "Car ".$carid;
-                            
-                            echo('<li class="menu-item menu-item-type-custom menu-item-object-custom"><a href="index.php?carid='.$carid.'">'.$dn.'</a></li>');
-                        }      
+                                if (strlen($dn) == 0)
+                                    $dn = "Car ".$carid;
+                                
+                                echo('<li class="menu-item menu-item-type-custom menu-item-object-custom"><a href="index.php?carid='.$carid.'">'.$dn.'</a></li>');
+                            }  
+                        }    
 ?>
 						</ul>
                     </li>
@@ -110,10 +116,12 @@ function menu($title)
 					<li id="menu-item-5" class="page_item_has_children">
 						<a href="#"><?php t("Extras"); ?></a>
 						<ul class='children'>
+                            <li class="menu-item menu-item-type-custom menu-item-object-custom"><a href="changelog.php"><?php t("Changelog"); ?></a></li>
 							<li class="menu-item menu-item-type-custom menu-item-object-custom"><a href="backup.php"><?php t("Backup"); ?></a></li>
                             <li class="menu-item menu-item-type-custom menu-item-object-custom"><a href="restore.php"><?php t("Restore"); ?></a></li>
 							<li class="menu-item menu-item-type-custom menu-item-object-custom"><a href="geofencing.php"><?php t("Geofence"); ?></a></li>
                             <li class="menu-item menu-item-type-custom menu-item-object-custom"><a href="dashboard.php?carid=<?= $current_carid ?>"><?php t("Dashboard"); ?></a></li>
+                            <li class="menu-item menu-item-type-custom menu-item-object-custom"><a href="abrp.php?carid=<?= $current_carid ?>">Abetterrouteplanner</a></li>
 							<li class="menu-item menu-item-type-custom menu-item-object-custom"><a href="/wakeup.php?id=<?= $current_carid ?>"><?php t("Wakeup Teslalogger"); ?>!</a></li>
                             <?PHP if (!file_exists("/etc/teslalogger/cmd_gosleep_$current_carid.txt"))
                             {?>
