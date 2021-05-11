@@ -228,6 +228,12 @@ namespace TeslaLogger
                     case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/mfa/[0-9]+/.+"):
                         Set_MFA(request, response);
                         break;
+                    case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/abrp/[0-9]+/info"):
+                        ABRP_Info(request, response);
+                        break;
+                    case bool _ when Regex.IsMatch(request.Url.LocalPath, @"/abrp/[0-9]+/set"):
+                        ABRP_Set(request, response);
+                        break;
                     case bool _ when request.Url.LocalPath.Equals("/debug/TeslaLogger/states"):
                         Debug_TeslaLoggerStates(request, response);
                         break;
@@ -267,14 +273,75 @@ namespace TeslaLogger
             }
         }
 
+        private void ABRP_Set(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            Match m = Regex.Match(request.Url.LocalPath, @"/abrp/([0-9]+)/set");
+            if (m.Success && m.Groups.Count == 2 && m.Groups[1].Captures.Count == 1)
+            {
+                int.TryParse(m.Groups[1].Captures[0].ToString(), out int CarID);
+                Car car = Car.GetCarByID(CarID);
+                if (car != null)
+                {
+                    string data = GetDataFromRequestInputStream(request);
+                    int abrp_mode = 0;
+                    string abrp_token = "";
+
+                    if (String.IsNullOrEmpty(data))
+                    {
+                        abrp_mode = Convert.ToInt32(request.QueryString["abrp_mode"]);
+                        abrp_token = request.QueryString["abrp_token"];
+                    }
+                    else
+                    {
+                        dynamic r = new JavaScriptSerializer().DeserializeObject(data);
+                        abrp_mode = Convert.ToInt32(r["abrp_mode"]);
+                        abrp_token = r["abrp_token"];
+                    }
+
+                    if (!car.dbHelper.SetABRP(abrp_token, abrp_mode))
+                        WriteString(response, "Wrong ABRP Token!");
+                    else
+                        WriteString(response, "OK");
+
+                    return;
+                }
+            }
+            WriteString(response, "");
+        }
+
+        private void ABRP_Info(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            Match m = Regex.Match(request.Url.LocalPath, @"/abrp/([0-9]+)/info");
+            if (m.Success && m.Groups.Count == 2 && m.Groups[1].Captures.Count == 1)
+            {
+                int.TryParse(m.Groups[1].Captures[0].ToString(), out int CarID);
+                Car car = Car.GetCarByID(CarID);
+                if (car != null)
+                {
+                    car.dbHelper.GetABRP(out string abrp_token, out int abrp_mode);
+                    var t = new
+                    {
+                        token = abrp_token,
+                        mode = abrp_mode
+                    };
+
+                    string json = new JavaScriptSerializer().Serialize(t);
+                    response.AddHeader("Content-Type", "application/json; charset=utf-8");
+                    WriteString(response, json);
+                    return;
+                }
+            }
+            WriteString(response, "");
+        }
+
         private void GetStaticMap(HttpListenerRequest request, HttpListenerResponse response)
         {
             int startPosID = 0;
             int endPosID = 0;
             int width = 240;
             int height = 0;
-            StaticMapService.StaticMapType type = StaticMapService.StaticMapType.Trip;
-            StaticMapService.StaticMapMode mode = StaticMapService.StaticMapMode.Regular;
+            StaticMapProvider.MapType type = StaticMapProvider.MapType.Trip;
+            StaticMapProvider.MapMode mode = StaticMapProvider.MapMode.Regular;
             if (request.QueryString.HasKeys())
             {
                 foreach (string key in request.QueryString.AllKeys)
@@ -296,18 +363,20 @@ namespace TeslaLogger
                         case "mode":
                             if ("dark".Equals(request.QueryString.GetValues(key)[0]))
                             {
-                                mode = StaticMapService.StaticMapMode.Dark;
+                                mode = StaticMapProvider.MapMode.Dark;
                             }
                             break;
                         case "type":
                             if ("park".Equals(request.QueryString.GetValues(key)[0]))
                             {
-                                type = StaticMapService.StaticMapType.Park;
+                                type = StaticMapProvider.MapType.Park;
                             }
                             else if ("charge".Equals(request.QueryString.GetValues(key)[0]))
                             {
-                                type = StaticMapService.StaticMapType.Charge;
+                                type = StaticMapProvider.MapType.Charge;
                             }
+                            break;
+                        default:
                             break;
                     }
                 }
@@ -336,7 +405,7 @@ namespace TeslaLogger
                     else
                     {
                         // order static map generation
-                        StaticMapService.GetSingleton().Enqueue(startPosID, endPosID, width, height, type, mode);
+                        StaticMapService.GetSingleton().Enqueue(1, startPosID, endPosID, width, height, mode, StaticMapProvider.MapSpecial.None);
                         // wait
                         for (int i = 0; i < 30; i++)
                         {
@@ -396,6 +465,7 @@ namespace TeslaLogger
                     {
                         car.passwortinfo.Append("Send MFA to Tesla server<br>");
                         car.MFA_Code = mfa;
+                        car.waitForMFACode = false;
                     }
                 }
             }
@@ -430,6 +500,8 @@ namespace TeslaLogger
                                 {
                                     enddt = DateTime.Now.AddSeconds(1);
                                 }
+                                break;
+                            default:
                                 break;
                         }
                     }
@@ -539,6 +611,8 @@ namespace TeslaLogger
                                 break;
                             case "carID":
                                 int.TryParse(request.QueryString.GetValues(key)[0], out carID);
+                                break;
+                            default:
                                 break;
                         }
                     }
@@ -676,8 +750,10 @@ namespace TeslaLogger
             }
 
             var c = Car.GetCarByID(id);
-
-            WriteString(response, c.passwortinfo.ToString());
+            if (c != null)
+                WriteString(response, c.passwortinfo.ToString());
+            else
+                WriteString(response, "CarId not found: " + id);
         }
 
         private static string GetDataFromRequestInputStream(HttpListenerRequest request)
@@ -953,7 +1029,7 @@ namespace TeslaLogger
 
                                 Logfile.Log("Start Reconnect!");
 
-                                Car nc = new Car(c.CarInDB, c.TeslaName, c.TeslaPasswort, c.CarInAccount, "", DateTime.MinValue, c.ModelName, c.car_type, c.car_special_type, c.display_name, c.vin, c.TaskerHash, c.Wh_TR);
+                                Car nc = new Car(c.CarInDB, c.TeslaName, c.TeslaPasswort, c.CarInAccount, "", DateTime.MinValue, c.ModelName, c.car_type, c.car_special_type, c.trim_badging, c.display_name, c.vin, c.TaskerHash, c.Wh_TR);
                             }
 
                             WriteString(response, "OK");
@@ -989,7 +1065,7 @@ namespace TeslaLogger
                                     cmd2.Parameters.AddWithValue("@freesuc", freesuc ? 1 : 0);
                                     cmd2.ExecuteNonQuery();
 
-                                    Car nc = new Car(Convert.ToInt32(newid), email, password, teslacarid, "", DateTime.MinValue, "", "", "", "", "", "", null);
+                                    Car nc = new Car(Convert.ToInt32(newid), email, password, teslacarid, "", DateTime.MinValue, "", "", "", "", "", "", "", null);
 
                                     WriteString(response, "ID:"+newid);
                                 }
@@ -1020,7 +1096,7 @@ namespace TeslaLogger
                                     c.ExitTeslaLogger("Credentials changed!");
                                 }
 
-                                Car nc = new Car(dbID, email, password, teslacarid, "", DateTime.MinValue, "", "", "", "", "", "", null);
+                                Car nc = new Car(dbID, email, password, teslacarid, "", DateTime.MinValue, "", "", "", "", "", "", "", null);
                                 WriteString(response, "OK");
                             }
                         }
@@ -1270,6 +1346,7 @@ namespace TeslaLogger
 
                         responseString = dt.Rows.Count > 0 ? Tools.DataTableToJSONWithJavaScriptSerializer(dt) : "not found!";
                     }
+                    dt.Clear();
                 }
             }
             catch (Exception ex)
@@ -1286,13 +1363,22 @@ namespace TeslaLogger
 
             try
             {
-                using (DataTable dt = new DataTable())
+                Car c = Car.allcars.FirstOrDefault(r => r.waitForMFACode);
+                if (c != null)
                 {
-                    using (MySqlDataAdapter da = new MySqlDataAdapter("SELECT id, display_name, tasker_hash, model_name, vin, tesla_name, tesla_carid, lastscanmytesla, freesuc FROM cars order by display_name", DBHelper.DBConnectionstring))
+                    responseString = "WAITFORMFA:" + c.CarInDB;
+                }
+                else
+                {
+                    using (DataTable dt = new DataTable())
                     {
-                        da.Fill(dt);
+                        using (MySqlDataAdapter da = new MySqlDataAdapter("SELECT id, display_name, tasker_hash, model_name, vin, tesla_name, tesla_carid, lastscanmytesla, freesuc FROM cars order by display_name", DBHelper.DBConnectionstring))
+                        {
+                            da.Fill(dt);
 
-                        responseString = dt.Rows.Count > 0 ? Tools.DataTableToJSONWithJavaScriptSerializer(dt) : "not found!";
+                            responseString = dt.Rows.Count > 0 ? Tools.DataTableToJSONWithJavaScriptSerializer(dt) : "not found!";
+                        }
+                        dt.Clear();
                     }
                 }
             }
